@@ -4,10 +4,10 @@ redirect_from: /real-time_executor/
 permalink: /docs/real-time_executor/
 ---
 
-Table of contents
+##Table of contents
 
-*   [Introduction and Goal](#introduction-and-goal)
-*   [Background: ROS 2 Executor Concept](#background-ros-2-executor-concept)
+*   [Introduction and Goal](#introduction)
+*   [ROS 2 Executor Concept](#ros-2-executor-concept)
     *   [Description](#description)
     *   [Architecture](#architecture)
     *   [Analysis](#analysis)
@@ -21,21 +21,42 @@ Table of contents
 *   [Acknowledgments](#acknowledgments)
 
 
-## Introduction and Goal
+## Introduction
 
-Predictable execution under given real-time constraints is one of the hallmarks of embedded systems, but is also a complex subject that can cause many errors. The real-time executor aims to provide a convenient API for the developers of micro-ROS based components and systems to simplify scheduling and to reduce errors, taking advantage of typical processing patterns in robotics applications.
+documentation in github readme.md im packag
+dann kann man es auch unter ros.index wiederfinden
+mit beispielen, wie man es verwendet.
 
-The approach is based on the concept of executors, which have been introduced in ROS 2. The real-time executor shall provide fine-grained control of the mapping of
-callbacks to the scheduling primitives and mechanisms of the underlying RTOS, even across multiple nodes.
+
+motivation:
+- Determinism
+- Real time guarantees
+- specific for RTOS / microcontrollers
+
+ROS2
+- executor made explicit (without architecture)
+
+RCL Executor
+- rcl    - c layer LET static - order  , specific for C API (einordnung bzgl. API layer)
+- rclcpp - outlook  
+- beschreibung des RCL executors
 
 
-## Background: ROS 2 Executor Concept
+Background:
+- rclcpp Executor concepts
+- Tobias' paper
+- CGL- Executor
+Predictable execution under given real-time constraints is a crucial requirement for many robotic applications, but is also a complex subject which could cause many errors. The real-time Executor aims to provide a convenient API for the developers of micro-ROS based components and systems to simplify scheduling and to reduce errors, taking advantage of typical processing patterns in robotics applications.
+
+The approaches presented here are based on the concept of executors, which have been introduced in ROS 2. The real-time Executors shall provide fine-grained control of the mapping of callbacks to the scheduling primitives and mechanisms of the underlying RTOS, even across multiple nodes.
+
+First, the ROS 2 Executor concept is described. Then a first approach, the Callback-group-level Executor is presented and as a second approach, a static-order scheduler based on RCL is introduced. Finally, we present the project roadmap and related work.
+
+## ROS 2 Executor Concept
 
 ROS 2 allows to bundle multiple nodes in one operating system process. To coordinate the execution of the callbacks of the nodes of a process, the Executor concept was introduced in rclcpp (and also in rclpy).
 
-
 ### Description
-
 The ROS 2 design defines one Executor (instance of [rclcpp::executor::Executor](https://github.com/ros2/rclcpp/blob/master/rclcpp/include/rclcpp/executor.hpp)) per process, which is typically created either in a custom main function or by the launch system. The Executor coordinates the execution of all callbacks issued by these nodes by checking for available work (timers, services, messages, subscriptions, etc.) from the DDS queue and dispatching it to one or more threads, implemented in [SingleThreadedExecutor](https://github.com/ros2/rclcpp/blob/master/rclcpp/include/rclcpp/executors/single_threaded_executor.hpp) and [MultiThreadedExecutor](https://github.com/ros2/rclcpp/blob/master/rclcpp/include/rclcpp/executors/multi_threaded_executor.hpp), respectively.
 
 The dispatching mechanism resembles the ROS 1 spin thread behavior: the Executor looks up the wait queues, which notifies it of any pending callback in the DDS queue. If there are pending callbacks, the ROS 2 Executor simply executes them in a FIFO manner.
@@ -53,14 +74,13 @@ Also, the Executor does not maintain an explicit callback queue, but relies on t
 
 ![Call sequence from executor to DDS](executor_to_dds_sequence_diagram.png)
 
-
 ### Analysis
-
-In the present Executor concept there is no notion of prioritization or categorization of the incoming callback calls. Moreover, it does not leverage the real-time characteristics of the underlying operating-system scheduler to have finer control on the order of executions. The overall implication of this behavior is that time-critical callbacks could suffer possible deadline misses and degraded performance since they are serviced later than non-critical callbacks. Additionally, due to the FIFO mechanism, it is difficult to determine usable bounds on the worst-case latency that each callback execution may incur.
-
+The Executor concept, however, does not provide means for prioritization or categorization of the incoming callback calls. Moreover, it does not leverage the real-time characteristics of the underlying operating-system scheduler to have finer control on the order of executions. The overall implication of this behavior is that time-critical callbacks could suffer possible deadline misses and a degraded performance since they are serviced later than non-critical callbacks. Additionally, due to the FIFO mechanism, it is difficult to determine usable bounds on the worst-case latency that each callback execution may incur.
 
 ## Callback-group-level Executor
+ We propose a callback-group-level Executor, which is based on the Executor concept of the ROS 2 Executor and addresses its afore-mentioned deficits. This new Executor provides fine-grained control of the mapping of callbacks to the scheduling primitives and mechanisms of the underlying RTOS, even across multiple nodes. ROS 2 allows bundling multiple nodes in one operating system process. To coordinate the execution of the callbacks of the nodes of a process, the Executor concept was introduced in rclcpp (and also in rclpy).
 
+### Description
 In order to address the challenges mentioned above, some changes are imminent: Firstly, an API to express real-time requirements on a callback level is needed and secondly, the Executor must be redesigned to respect these real-time requirements in its scheduling decisions. As the current ROS 2 Executor works at a node-level granularity – which is a limitation given that a node may issue different callbacks needing different real-time guarantees - we decided to refine the ROS 2 Executor API for more fine-grained control over the scheduling of callbacks on the granularity of callback groups using. We leverage the callback-group concept existing in rclcpp by introducing real-time profiles such as RT-CRITICAL and BEST-EFFORT in the callback-group API (i.e. rclcpp/callback_group.hpp). Each callback needing specific real-time guarantees, when created, may therefore be associated with a dedicated callback group. With this in place, we enhanced the Executor and depending classes (e.g., for memory allocation) to operate at a finer callback-group granularity. This allows a single node to have callbacks with different real-time profiles assigned to different Executor instances - within one process.
 
 Thus, an Executor instance can be dedicated to specific callback group(s) and the Executor’s thread(s) can be prioritized according to the real-time requirements of these groups. For example, all time-critical callbacks are handled by an "RT-CRITICAL" Executor instance running at the highest scheduler priority.
@@ -69,92 +89,29 @@ The following figure illustrates this approach with two nodes served by three Ca
 
 ![Sample system with two nodes and three Callback-group-level Executors in one process](cbg-executor_sample_system.png)
 
-In this section, we describe the necessary changes to the Executor API and report on first experiments with it.
-
+The different callbacks of the Drive-Base node are distributed to different Executors (visualized by the color red, yellow and green).  For example the onCmdVel and publishWheelTicks callback are scheduled by the same Executor (yellow). Callbacks from different nodes can be serviced by the same Executor.
 
 ### API Changes
+In this section, we describe the necessary changes to the Executor API:
+*   [include/rclcpp/callback\_group.hpp](https://github.com/micro-ROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/callback_group.hpp):
 
-*   [include/rclcpp/callback\_group.hpp](https://github.com/microROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/callback_group.hpp):
+    * Introduced an enum to distinguish up to three real-time classes (requirements) per node (RealTimeCritical, SoftRealTime, BestEffort)
+    * Changed association with Executor instance from nodes to callback groups.
+*   [include/rclcpp/executor.hpp](https://github.com/micro-ROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/executor.hpp)
 
-    Introduced enum to distinguish up to three real-time classes (requirements) per node.
+    * Added functions to add and remove individual callback groups in addition to whole nodes.
 
-    ```C++
-    enum class RealTimeClass
-    {
-      RealTimeCritical,
-      SoftRealTime,
-      BestEffort
-    };
-    ```
+    * Replaced private vector of nodes with a map from callback groups to nodes.
 
-    Also, changed association with Executor instance from nodes to callback groups.
+*   [include/rclcpp/memory\_strategy.hpp](https://github.com/micro-ROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/memory_strategy.hpp)
 
-    ```C++
-    class CallbackGroup
-    {
-      ...
+    * Changed all functions that expect a vector of nodes to the just mentioned map.
+*   [include/rclcpp/node.hpp](https://github.com/micro-ROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/node.hpp) and [include/rclcpp/node_interfaces/node_base.hpp](https://github.com/micro-ROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/node_interfaces/node_base.hpp)
 
-      RCLCPP_PUBLIC
-      std::atomic_bool &
-      get_associated_with_executor_atomic();
+    * Extended arguments of create\_callback\_group function for the real-time class.
+    * Removed the get\_associated\_with\_executor\_atomic function.
 
-      ...
-    }
-    ```
-
-*   [include/rclcpp/executor.hpp](https://github.com/microROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/executor.hpp)
-
-    Added functions to add and remove individual callback groups in addition to whole nodes.
-
-    ```C++
-    class Executor
-    {
-      ...
-
-      RCLCPP_PUBLIC
-      virtual void
-      add_callback_group(
-        rclcpp::callback_group::CallbackGroup::SharedPtr group_ptr,
-        rclcpp::node_interfaces::NodeBaseInterface::SharedPtr node_ptr, bool notify = true);
-
-      RCLCPP_PUBLIC
-      virtual void
-      remove_callback_group(
-        rclcpp::callback_group::CallbackGroup::SharedPtr group_ptr,
-        bool notify = true);
-
-      ...
-    }
-    ```
-
-     Replaced private vector of nodes with a map from callback groups to nodes.
-
-    ```C++
-    typedef std::map<rclcpp::callback_group::CallbackGroup::WeakPtr,
-      rclcpp::node_interfaces::NodeBaseInterface::WeakPtr,
-      std::owner_less<rclcpp::callback_group::CallbackGroup::WeakPtr>> WeakCallbackGroupsToNodesMap;
-    WeakCallbackGroupsToNodesMap weak_groups_to_nodes_;
-    ```
-
-*   [include/rclcpp/memory\_strategy.hpp](https://github.com/microROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/memory_strategy.hpp)
-
-    Changed all functions that expect a vector of nodes to the just mentioned map.
-
-*   [include/rclcpp/node.hpp](https://github.com/microROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/node.hpp) and [include/rclcpp/node_interfaces/node_base.hpp](https://github.com/microROS/rclcpp/blob/cbg-executor-0.5.1/rclcpp/include/rclcpp/node_interfaces/node_base.hpp)
-
-    Extended arguments of create\_callback\_group function for the real-time class.
-
-    ```C++
-    create_callback_group(
-      rclcpp::callback_group::CallbackGroupType group_type,
-      rclcpp::callback_group::RealTimeClass real_time_class =
-      rclcpp::callback_group::RealTimeClass::BestEffort);
-    ```
-
-    Removed the get\_associated\_with\_executor\_atomic function.
-
-All the changes can be found in the branches [cbg-executor-0.5.1](https://github.com/microROS/rclcpp/tree/cbg-executor-0.5.1/rclcpp) and [cbg-executor-0.6.1](https://github.com/microROS/rclcpp/tree/cbg-executor-0.6.1/rclcpp) for the corresponding version 0.5.1 and 0.6.1 of the rclcpp in the fork at [github.com/microROS/rclcpp/](https://github.com/microROS/rclcpp/).
-
+All the changes can be found in the branches [cbg-executor-0.5.1](https://github.com/micro-ROS/rclcpp/tree/cbg-executor-0.5.1/rclcpp) and [cbg-executor-0.6.1](https://github.com/micro-ROS/rclcpp/tree/cbg-executor-0.6.1/rclcpp) for the corresponding version 0.5.1 and 0.6.1 of the rclcpp in the fork at [github.com/micro-ROS/rclcpp/](https://github.com/micro-ROS/rclcpp/).
 
 ### Meta-Executor Concept
 
@@ -164,21 +121,85 @@ The Meta Executor internally binds these Executors to the underlying kernel thre
 
 ![Illustration of the Meta-Executor concept](meta-executor_concept.png)
 
-
 ### Test Bench
 
 As a proof of concept, we implemented a small test bench in the present package cbg-executor_ping-pong_cpp. The test bench comprises a Ping node and a Pong node which exchange real-time and best-effort messages simultaneously with each other. Each class of messages is handled with a dedicated Executor, as illustrated in the following figure.
 
 ![Architecture for the Callback-group-level Executor test bench](cbg-executor_test-bench_architecture.png)
-
 With the test bench, we validated the functioning of the approach - here on ROS 2 v0.5.1 with the Fast-RTPS DDS implementation - on a typical laptop.
 
 ![Results from Callback-group-level Executor test bench](cbg-executor_test-bench_results.png)
 
 The test bench is provided in the [bg-executor_ping-pong_cpp](https://github.com/microROS/micro-ROS-demos/tree/master/Cpp/cbg-executor_ping-pong) package of the [micro-ROS-demos](https://github.com/microROS/micro-ROS-demos/) repository.
 
+## RCL-Executor
+
+The ROS 2 Executor is responsible for receiving incoming data, calling timers, services etc. The recent paper ) analyzed the Executor in detail. They found out, that these events are not processed in a pure FIFO fashion, but timers are preferred over all other events of the DDS queue. The implication is, that in a high-load situation, only pending timers will be processed while incoming DDS-events will be delayed or starved. Furthermore, the FIFO-strategy makes it difficult to determine time bounds on the total execution time, which are necessary for the verification of safety- and real-time requirements.
+
+##### Concept
+To solve these issues, we have implemented an RCL-Executor, which provides different scheduling strategies. Currently, two scheduling policies are implemented: static-order and priority-based scheduling.
+
+In static-order-scheduling, all events, including timers, are processed in a pre-defined order. In case different events (timers, subscriptions, etc.) are available at the DDS queue, then they are all processed in the pre-defined static order.
+
+In priority-based scheduling, a priority is defined for each event. If multiple events are available at the DDS queue, then only the event with the highest priority is processed.   
+
+##### User API
+The RCL-Executor is library written in C and is based on RCL. On implementation level we use a different terminology. In the RCL-Executor library an *event* is called a *handle* and *static-order* scheduling is called *FIFO* scheduling.
+
+The RCL-Executor provides the following user interface:
+* Initialization
+  * Total number of handles
+  * Scheduling policy (*FIFO*, *PRIORITY*)
+* Configuration
+  * rcle_executor_add_subscription()
+  * rcle_executor_add_subscription_prio()
+  * rcle_executor_add_timer()
+  * rcle_executor_add_subscription_prio()
+* Running
+  * rcle_executor_spin_once()
+  * rcle_executor_spin()
+
+For the static-order scheduling, the user initializes the RCL-Executor with *FIFO* as scheduling policy and the total number of handles. Then, the handles are added the the RCL-Executor. The order of these method-calls defines the static-order for the scheduling, hence the name *FIFO* scheduling. Processing the handles is started by e.g. the *spin*-function.
+
+For priority-based scheduling, the user initializes the RCL-Executor with *PRIORITY* as scheduling policy and the total number of handles. The specific priority of each handle is specified in the respective *rcle_executor_add-\*-prio* function. Processing the handles is started by e.g. the *spin*-function.
+
+As resources are very constrained on micro-controllers, specific attention has been paid to the memory allocation: Dynamic memory is only allocated during the initialization phase to reserve memory for all handles. Later on, no memory is allocated while scheduling the handles (which was the case in the RCLC implementation).
+
+The RCL-Executor and examples can be found in the repository [rcl-executor](https://github.com/micro-ROS/rcl_executor).
+
+
+## Static-order scheduler
+RT Executors
+
+implementation:
+- as thin-layer based on RCL (written in C)
+
+API
+- create executor
+- add_subscription
+- add_timer
+- add_function
+- spin_some
+- spin_period
+
+semantics:
+fixed static order scheduling. All handles (callbacks, timers, services, etc.) are executed in the order
+as they were added using the add_* methods to the executor.
+
+LET semantics (reference to some scientific paper)
+- read first, process, write
+- benefit: no interference of write of some callbacks to any other callbacks in this round of evaluating DDS queue ()
+take section from software architecture deliverable
+
+implementation notes:
+- implemented by: 1) creating a wait_set 2) rcl_wait() 3) rcl_take (for all ready handles) 4) scheduling of all handles in the static ORDER
+- during configuration: dynamic allocation for n number of handles, during run-time (e.g. spin_some) no dynamic memory allocation (except within rcl_take(), where memory might be dynamically allocated for messages with variable length)
 
 ## Roadmap
+
+Limitations:
+- support for subscriptions, timers, external functions
+- not supported yet: guard_condition, client, services ()
 
 **2018**
 
@@ -279,10 +300,10 @@ URL: http://ieeexplore.ieee.org/stamp/stamp.jsp?tp=&arnumber=8376277&isnumber=83
 -->
 
 
-## References and Links
+## References
 
 *   Ralph Lange: Callback-group-level Executor for ROS 2. Lightning talk at ROSCon 2018. Madrid, Spain. Sep 2018. [[Slides]](https://roscon.ros.org/2018/presentations/ROSCon2018_Lightning1_4.pdf) [[Video]](https://vimeo.com/292707644)
-
+* [CB2019] D. Casini, T. Blaß, I. Lütkebohle, B. Brandenburg: Response-Time Analysis of ROS 2 Processing Chains under Reservation-Based Scheduling, in Euromicro-Conference on Real-Time Systems 2019 [[Paper](http://drops.dagstuhl.de/opus/volltexte/2019/10743/)].[[slides]](https://www.ecrts.org/wp-content/uploads/2019/07/casini.pdf)
 
 ## Acknowledgments
 
